@@ -84,11 +84,17 @@ Vec2 gradEnergyFunction(float x, float y) {
 }
 
 
+/*
+ *  TODO: Implement normal distribution (box muller transform)
+ */
 float randomNormal(float scale) {
     return scale * (((float) rand()) / RAND_MAX * 2 - 1);
 }
 
 
+/*
+ *  Apply one step of langevin sampling to a point at pos.
+ */
 void langevinStep(Vec2* pos) {
     Vec2 grad = gradEnergyFunction(pos->x, pos->y);
     pos->x += 1e-2 * grad.x + randomNormal(1e-1);
@@ -97,10 +103,15 @@ void langevinStep(Vec2* pos) {
 
 
 void updateAndRender(PixelBuffer* pixBuff) {
+    // Current position/state of langevin markov chain, start at 0
     static Vec2 curr = {0.0, 0.0};
+    static float maxEnergy = 1;
 
+    // Update current position/state
     langevinStep(&curr);
 
+    // Draw energy surface, only really needs to change when the surface changes 
+    // (which is currently never) but this works for now.
     int currRad = 4;
     byte* pixels = pixBuff->pixels;
     for (int y=0; y < pixBuff->height; y++) {
@@ -108,18 +119,25 @@ void updateAndRender(PixelBuffer* pixBuff) {
             float rx = 2.0 * x / (float) pixBuff->width - 1;
             float ry = 2.0 * y / (float) pixBuff->height - 1;
             float energy = energyFunction(rx, ry);
+            if (energy > maxEnergy) {
+                maxEnergy = energy;
+            }
+            // Ensure energy < 1 for easier coloring. Will give one nonesense frame
+            // at start but that doesn't matter rn
+            energy = energy / maxEnergy;
 
-            Vec2 energyGrad = gradEnergyFunction(rx, ry);
+            // Energy truncated to highlight contours
+            float energyTrunc = (((byte) (energy * 255)) & 0xf8) / 255.0;
 
-            float gradSqNorm = (energyGrad.x * energyGrad.x + energyGrad.y * energyGrad.y) / 4;
-
-
-            *pixels++ = energy * 255 * (energy < 1) + (1 - (energy < 1)) * 255;
-            *pixels++ = 0;
-            *pixels++ = 255 * gradSqNorm * (gradSqNorm < 1) + (1 - (gradSqNorm < 1)) * 255;
+            *pixels++ = (byte) (energyTrunc * 0xe0);
+            *pixels++ = (byte) (energyTrunc * 0x98);
+            *pixels++ = (byte) (energyTrunc * 0xc6);
             *pixels++ = 0xff;
         }
     }
+
+
+    // Draw a marker at the current position of the langevin chain
 
     int currYMid = ((int) (pixBuff->height * (curr.y + 1) / 2));
     int currYStart = currYMid-currRad;
@@ -129,9 +147,9 @@ void updateAndRender(PixelBuffer* pixBuff) {
     int currXStart = currXMid-currRad;
     int currXEnd = currXMid+currRad;
 
-    for (int y=currYStart; y <= currYEnd; y++) {
+    for (int y=currYStart; y < currYEnd; y++) {
         pixels = (pixBuff->pixels + y * pixBuff->pitch + currXStart * pixBuff->bytesPerPixel);
-        for (int x=currXStart; x <= currXEnd; x++) {
+        for (int x=currXStart; x < currXEnd; x++) {
             if (y >= 0 && y < pixBuff->height && x > 0 && x < pixBuff->width) {
                 int distX = (x - currXMid);
                 int distY = (y- currYMid);
