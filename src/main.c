@@ -27,6 +27,33 @@ void sdl_update_window(SDL_Renderer* renderer, SDL_Texture* texture, PixelBuffer
 }
 
 
+SDL_Texture* sdl_handle_window_resize(PixelBuffer* pixBuff, SDL_Texture* texture, SDL_Renderer* renderer, int width, int height) {
+    if (texture) {
+        SDL_DestroyTexture(texture);
+        texture=0;
+    }
+    if (pixBuff->pixels) {
+        free(pixBuff->pixels);
+        pixBuff->pixels = 0;
+    }
+
+    SDL_Texture* res = SDL_CreateTexture(
+        renderer,
+        SDL_PIXELFORMAT_ABGR8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        width,
+        height
+    );
+
+    pixBuff->width = width;
+    pixBuff->pitch = width * BYTES_PER_PIXEL;
+    pixBuff->height = height;
+    pixBuff->pixels = (byte*) malloc(height * pixBuff->pitch);
+    
+    return res;
+}
+
+
 typedef struct {
     float x;
     float y;
@@ -112,7 +139,7 @@ void updateAndRender(PixelBuffer* pixBuff) {
 
     // Draw energy surface, only really needs to change when the surface changes 
     // (which is currently never) but this works for now.
-    int currRad = 4;
+    int currRad = 10;
     byte* pixels = pixBuff->pixels;
     for (int y=0; y < pixBuff->height; y++) {
         for (int x=0; x < pixBuff->width; x++) {
@@ -212,6 +239,19 @@ int main() {
                 case SDL_QUIT:
                     quit=1;
                     printf("Quit!\n");
+                    break;
+                case SDL_WINDOWEVENT:
+                    if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                        width = event.window.data1;
+                        height = event.window.data2;
+                        texture = sdl_handle_window_resize(
+                            &pixBuff, 
+                            texture, 
+                            renderer, 
+                            width, 
+                            height
+                        );
+                    }
                     break;
                 default:;
             }
