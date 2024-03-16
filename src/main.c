@@ -114,8 +114,14 @@ Vec2 gradEnergyFunction(float x, float y) {
 /*
  *  TODO: Implement normal distribution (box muller transform)
  */
-float randomNormal(float scale) {
-    return scale * (((float) rand()) / RAND_MAX * 2 - 1);
+Vec2 randomNormal(float scale) {
+    float u1 = ((float) rand()) / RAND_MAX;
+    float u2 = ((float) rand()) / RAND_MAX;
+    double r = sqrt(-2.0 * log(u1));
+    double theta = 2.0 * M_PI * u2;
+
+    Vec2 res = {(float) scale * r * cos(theta), (float) scale * r * sin(theta)};
+    return res;
 }
 
 
@@ -124,8 +130,9 @@ float randomNormal(float scale) {
  */
 void langevinStep(Vec2* pos) {
     Vec2 grad = gradEnergyFunction(pos->x, pos->y);
-    pos->x += 1e-2 * grad.x + randomNormal(1e-1);
-    pos->y += 1e-2 * grad.y + randomNormal(1e-1);
+    Vec2 jitter = randomNormal(2.23e-2);
+    pos->x += 1e-3 * grad.x + jitter.x;
+    pos->y += 1e-3 * grad.y + jitter.y;
 }
 
 
