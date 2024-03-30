@@ -2,12 +2,21 @@
 #include <SDL2/SDL.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 #define BYTES_PER_PIXEL 4
 
 #define NUM_PTS 4
 
+// Crash on expr false
+#define Assert(expr) if (!(expr)) {*(int*)0=0;}
 
+#define Kilobytes(value) ((value)*((u64)1024))
+#define Megabytes(value) (Kilobytes(value)*((u64)1024))
+#define Gigabytes(value) (Megabytes(value)*((u64)1024))
+
+
+typedef uint64_t u64;
 typedef unsigned char byte;
 
 typedef struct {
@@ -58,6 +67,14 @@ typedef struct {
     float x;
     float y;
 } Vec2;
+
+
+typedef struct {
+    u64 size;
+    u64 maxSize;
+    byte* storage;
+     
+} Memory;
 
 
 const Vec2 energyPoints[NUM_PTS] = {
@@ -111,9 +128,6 @@ Vec2 gradEnergyFunction(float x, float y) {
 }
 
 
-/*
- *  TODO: Implement normal distribution (box muller transform)
- */
 Vec2 randomNormal(float scale) {
     float u1 = ((float) rand()) / RAND_MAX;
     float u2 = ((float) rand()) / RAND_MAX;
@@ -136,10 +150,77 @@ void langevinStep(Vec2* pos) {
 }
 
 
+int max(int a, int b) {
+    if (a < b) {
+        return b;
+    } else {
+        return a;
+    }
+}
+
+int min(int a, int b) {
+    if (a > b) {
+        return b;
+    } else {
+        return a;
+    }
+}
+
+
+void drawCircle(PixelBuffer* pixBuff, int rad, int xPos, int yPos) {
+    int startX = max(0, xPos - rad);
+    int startY = max(0, yPos - rad);
+
+    int endX = min(pixBuff->width-1, xPos + rad);
+    int endY = min(pixBuff->height-1, yPos + rad);
+
+    byte* pixels;
+
+    int radSq = rad * rad;
+
+    for (int y=startY; y < endY; y++) {
+        pixels = pixBuff->pixels + y * pixBuff->pitch + startX * pixBuff->bytesPerPixel;
+        for (int x=startX; x < endX; x++) {
+            int rx = x - xPos;
+            int ry = y - yPos;
+            if (rx*rx + ry*ry <= radSq) {
+                *pixels++ = 0xff;
+                *pixels++ = 0xff;
+                *pixels++ = 0xff;
+                *pixels++ = 0xff;
+            } else {
+                pixels += 4;
+            }
+        }
+    }
+}
+
+
+void copyPixels(PixelBuffer* dest, PixelBuffer* src, int xPos, int yPos) {
+    byte* srcPixels = src->pixels;
+    for (int y=yPos; y < dest->height && y - yPos < src->height; y++) {
+        byte* destPixels = dest->pixels + y * dest->pitch + xPos * dest->bytesPerPixel;
+        srcPixels = src->pixels + (y-yPos) * src->pitch;
+        for (int x=xPos; x < dest->width && x - xPos < src->width; x++) {
+            if (*(srcPixels+3) > 0x00) {
+                *destPixels++ = *srcPixels++;
+                *destPixels++ = *srcPixels++;
+                *destPixels++ = *srcPixels++;
+                *destPixels++ = *srcPixels++;
+            } else {
+                destPixels+=4;
+                srcPixels+=4;
+            }
+        }
+    }
+}
+
+
 void updateAndRender(PixelBuffer* pixBuff) {
     // Current position/state of langevin markov chain, start at 0
     static Vec2 curr = {0.0, 0.0};
     static float maxEnergy = 1;
+    
 
     // Update current position/state
     langevinStep(&curr);
@@ -169,7 +250,7 @@ void updateAndRender(PixelBuffer* pixBuff) {
             *pixels++ = 0xff;
         }
     }
-
+    
 
     // Draw a marker at the current position of the langevin chain
 
@@ -189,10 +270,14 @@ void updateAndRender(PixelBuffer* pixBuff) {
                 int distY = (y- currYMid);
                 int distSq =  distX*distX + distY * distY;
                 int shouldDraw = distSq < currRad * currRad;
-                *pixels++ = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                *pixels++ = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                *pixels++ = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                *pixels++ = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
+                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
+                pixels++;
+                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
+                pixels++;
+                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
+                pixels++;
+                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
+                pixels++;
             }
         }
     }
@@ -236,6 +321,12 @@ int main() {
         .pitch = width * BYTES_PER_PIXEL,
     };
     pixBuff.pixels = (byte*) malloc(height * pixBuff.pitch);
+
+
+    Memory mem;
+    mem.size = 0;
+    mem.maxSize = Megabytes(1);
+    mem.storage = (byte*) malloc(sizeof(byte) * mem.maxSize);
     
 
     SDL_Event event;
