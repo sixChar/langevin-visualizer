@@ -8,6 +8,8 @@
 
 #define NUM_PTS 4
 
+#define NUM_BUTTONS 6
+
 // Crash on expr false
 #define Assert(expr) if (!(expr)) {*(int*)0=0;}
 
@@ -27,6 +29,19 @@ typedef struct {
     byte* pixels;
 } PixelBuffer;
 
+typedef struct Input {
+    union {
+        int buttons[NUM_BUTTONS];
+        struct {
+            int moveL;
+            int moveR;
+            int moveU;
+            int moveD;
+            int zIn;
+            int zOut;
+        };
+    };
+} Input;
 
 void sdl_update_window(SDL_Renderer* renderer, SDL_Texture* texture, PixelBuffer* pixBuff) {
     SDL_RenderClear(renderer);
@@ -142,11 +157,13 @@ Vec2 randomNormal(float scale) {
 /*
  *  Apply one step of langevin sampling to a point at pos.
  */
-void langevinStep(Vec2* pos) {
+void langevinStep(Vec2* pos, float stepSize) {
+
+    float randSize = sqrt(2 * stepSize);
     Vec2 grad = gradEnergyFunction(pos->x, pos->y);
-    Vec2 jitter = randomNormal(2.23e-2);
-    pos->x += 1e-3 * grad.x + jitter.x;
-    pos->y += 1e-3 * grad.y + jitter.y;
+    Vec2 jitter = randomNormal(randSize);
+    pos->x += stepSize * grad.x + jitter.x;
+    pos->y += stepSize * grad.y + jitter.y;
 }
 
 
@@ -198,6 +215,14 @@ void drawCircle(PixelBuffer* pixBuff, int rad, int xPos, int yPos) {
 
 void copyPixels(PixelBuffer* dest, PixelBuffer* src, int xPos, int yPos) {
     byte* srcPixels = src->pixels;
+
+    if (xPos < 0) {
+        xPos = 0;
+    }
+    if (yPos < 0) {
+        yPos = 0;
+    }
+
     for (int y=yPos; y < dest->height && y - yPos < src->height; y++) {
         byte* destPixels = dest->pixels + y * dest->pitch + xPos * dest->bytesPerPixel;
         srcPixels = src->pixels + (y-yPos) * src->pitch;
@@ -216,14 +241,22 @@ void copyPixels(PixelBuffer* dest, PixelBuffer* src, int xPos, int yPos) {
 }
 
 
-void updateAndRender(PixelBuffer* pixBuff) {
+void updateAndRender(PixelBuffer* pixBuff, Input* inp) {
     // Current position/state of langevin markov chain, start at 0
     static Vec2 curr = {0.0, 0.0};
     static float maxEnergy = 1;
+
+    static float stepSize = 0.0005;
+
+    static float xOffset = 0.0;
+    static float yOffset = 0.0;
+
+    xOffset += 0.03 * (inp->moveR - inp->moveL);
+    yOffset += 0.03 * (inp->moveD - inp->moveU);
     
 
     // Update current position/state
-    langevinStep(&curr);
+    langevinStep(&curr, stepSize);
 
     // Draw energy surface, only really needs to change when the surface changes 
     // (which is currently never) but this works for now.
@@ -231,8 +264,8 @@ void updateAndRender(PixelBuffer* pixBuff) {
     byte* pixels = pixBuff->pixels;
     for (int y=0; y < pixBuff->height; y++) {
         for (int x=0; x < pixBuff->width; x++) {
-            float rx = 2.0 * x / (float) pixBuff->width - 1;
-            float ry = 2.0 * y / (float) pixBuff->height - 1;
+            float rx = 2.0 * x / (float) pixBuff->width - 1 + xOffset;
+            float ry = 2.0 * y / (float) pixBuff->height - 1 + yOffset;
             float energy = energyFunction(rx, ry);
             if (energy > maxEnergy) {
                 maxEnergy = energy;
@@ -253,33 +286,41 @@ void updateAndRender(PixelBuffer* pixBuff) {
     
 
     // Draw a marker at the current position of the langevin chain
+    int currX = ((int) (pixBuff->width * (curr.x - xOffset + 1) / 2));
+    int currY = ((int) (pixBuff->height * (curr.y - yOffset + 1) / 2));
+    drawCircle(pixBuff, currRad, currX, currY);
 
-    int currYMid = ((int) (pixBuff->height * (curr.y + 1) / 2));
-    int currYStart = currYMid-currRad;
-    int currYEnd = currYMid+currRad;
+}
 
-    int currXMid = ((int) (pixBuff->width * (curr.x + 1) / 2));
-    int currXStart = currXMid-currRad;
-    int currXEnd = currXMid+currRad;
 
-    for (int y=currYStart; y < currYEnd; y++) {
-        pixels = (pixBuff->pixels + y * pixBuff->pitch + currXStart * pixBuff->bytesPerPixel);
-        for (int x=currXStart; x < currXEnd; x++) {
-            if (y >= 0 && y < pixBuff->height && x > 0 && x < pixBuff->width) {
-                int distX = (x - currXMid);
-                int distY = (y- currYMid);
-                int distSq =  distX*distX + distY * distY;
-                int shouldDraw = distSq < currRad * currRad;
-                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                pixels++;
-                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                pixels++;
-                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                pixels++;
-                *pixels = *pixels * (1 - shouldDraw) + 255 * shouldDraw;
-                pixels++;
-            }
-        }
+void clearInput(Input* inp) {
+    for (int i=0; i < NUM_BUTTONS; i++) {
+        inp->buttons[i] = 0;
+    }
+
+}
+
+
+void handleKey(Input* inp, int sym, int isDown) {
+    switch (sym) {
+        case SDLK_LEFT:
+            inp->moveL = isDown;
+            break;
+        case SDLK_RIGHT:
+            inp->moveR = isDown;
+            break;
+        case SDLK_UP:
+            inp->moveU = isDown;
+            break;
+        case SDLK_DOWN:
+            inp->moveD = isDown;
+            break;
+        case SDLK_z:
+            inp->zIn = isDown;
+            break;
+        case SDLK_x:
+            inp->zOut = isDown;
+            break;
     }
 }
 
@@ -327,6 +368,11 @@ int main() {
     mem.size = 0;
     mem.maxSize = Megabytes(1);
     mem.storage = (byte*) malloc(sizeof(byte) * mem.maxSize);
+
+    
+    Input inp;
+    
+    clearInput(&inp);
     
 
     SDL_Event event;
@@ -351,10 +397,16 @@ int main() {
                         );
                     }
                     break;
+                case SDL_KEYDOWN:
+                    handleKey(&inp, event.key.keysym.sym, 1);
+                    break;
+                case SDL_KEYUP:
+                    handleKey(&inp, event.key.keysym.sym, 0);
+                    break;
                 default:;
             }
         }
-        updateAndRender(&pixBuff);
+        updateAndRender(&pixBuff, &inp);
         sdl_update_window(renderer, texture, &pixBuff);
     }
 
