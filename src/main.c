@@ -3,11 +3,19 @@
 #include <math.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 
 #define BYTES_PER_PIXEL 4
 
+// Number of attracting points in the energy function (low energy/high probability)
 #define NUM_PTS 4
+// What the value of the step size level (from which the step size is derived) should start as
+#define START_STEP_SIZE_LEVEL -26
+#define STEP_SIZE_CHANGE_MODIFIER 0.25
+// Radius of pointer showing current position
+#define POINTER_RADIUS 10
 
+#define MOVE_SPEED 0.3
 #define NUM_BUTTONS 6
 
 // Crash on expr false
@@ -21,7 +29,7 @@
 typedef uint64_t u64;
 typedef unsigned char byte;
 
-typedef struct {
+typedef struct PixelBuffer {
     int width;
     int height;
     int bytesPerPixel;
@@ -37,11 +45,21 @@ typedef struct Input {
             int moveR;
             int moveU;
             int moveD;
-            int zIn;
-            int zOut;
+            int incStep;
+            int decStep;
         };
     };
+    int setX;
+    int setY;
+    int doSet;
 } Input;
+
+typedef struct {
+    float x;
+    float y;
+} Vec2;
+
+
 
 void sdl_update_window(SDL_Renderer* renderer, SDL_Texture* texture, PixelBuffer* pixBuff) {
     SDL_RenderClear(renderer);
@@ -78,18 +96,14 @@ SDL_Texture* sdl_handle_window_resize(PixelBuffer* pixBuff, SDL_Texture* texture
 }
 
 
-typedef struct {
-    float x;
-    float y;
-} Vec2;
+typedef struct SimState {
+    Vec2 curr;
+    int stepSizeLevel;
+    float xOffset, yOffset;
+    float maxEnergy;
 
+} SimState;
 
-typedef struct {
-    u64 size;
-    u64 maxSize;
-    byte* storage;
-     
-} Memory;
 
 
 const Vec2 energyPoints[NUM_PTS] = {
@@ -156,14 +170,19 @@ Vec2 randomNormal(float scale) {
 
 /*
  *  Apply one step of langevin sampling to a point at pos.
+ *
+ *  NOTE: The energy function is actually inverted so we are doing gradient ascent
+ *        This is because I wanted a couple low energy islands for the chain to hop
+ *        around and this was the first/easiest I thought of setting that up.
  */
 void langevinStep(Vec2* pos, float stepSize) {
-
-    float randSize = sqrt(2 * stepSize);
+    // More stable than sqrt(2 * stepSize)
+    float randSize = sqrt(stepSize);
     Vec2 grad = gradEnergyFunction(pos->x, pos->y);
     Vec2 jitter = randomNormal(randSize);
     pos->x += stepSize * grad.x + jitter.x;
     pos->y += stepSize * grad.y + jitter.y;
+
 }
 
 
@@ -241,38 +260,43 @@ void copyPixels(PixelBuffer* dest, PixelBuffer* src, int xPos, int yPos) {
 }
 
 
-void updateAndRender(PixelBuffer* pixBuff, Input* inp) {
+
+
+void updateAndRender(PixelBuffer* pixBuff, Input* inp, SimState* state) {
     // Current position/state of langevin markov chain, start at 0
-    static Vec2 curr = {0.0, 0.0};
-    static float maxEnergy = 1;
+    if (inp->doSet) {
+        state->curr.x = (float) inp->setX / pixBuff->width * 2.0 - 1 + state->xOffset;
+        state->curr.y = (float) inp->setY / pixBuff->height * 2.0 - 1 + state->yOffset;
+    }
 
-    static float stepSize = 0.0005;
 
-    static float xOffset = 0.0;
-    static float yOffset = 0.0;
+    state->stepSizeLevel += inp->incStep - inp->decStep;
 
-    xOffset += 0.03 * (inp->moveR - inp->moveL);
-    yOffset += 0.03 * (inp->moveD - inp->moveU);
+
+    float stepSize = exp(state->stepSizeLevel * STEP_SIZE_CHANGE_MODIFIER);
+
+
+    state->xOffset += MOVE_SPEED * (inp->moveR - inp->moveL);
+    state->yOffset += MOVE_SPEED * (inp->moveD - inp->moveU);
     
 
-    // Update current position/state
-    langevinStep(&curr, stepSize);
+    // Update current position/state with a langevin step
+    langevinStep(&state->curr, stepSize);
 
     // Draw energy surface, only really needs to change when the surface changes 
     // (which is currently never) but this works for now.
-    int currRad = 10;
     byte* pixels = pixBuff->pixels;
     for (int y=0; y < pixBuff->height; y++) {
         for (int x=0; x < pixBuff->width; x++) {
-            float rx = 2.0 * x / (float) pixBuff->width - 1 + xOffset;
-            float ry = 2.0 * y / (float) pixBuff->height - 1 + yOffset;
+            float rx = 2.0 * x / (float) pixBuff->width - 1 + state->xOffset;
+            float ry = 2.0 * y / (float) pixBuff->height - 1 + state->yOffset;
             float energy = energyFunction(rx, ry);
-            if (energy > maxEnergy) {
-                maxEnergy = energy;
+            if (energy > state->maxEnergy) {
+                state->maxEnergy = energy;
             }
             // Ensure energy < 1 for easier coloring. Will give one nonesense frame
             // at start but that doesn't matter rn
-            energy = energy / maxEnergy;
+            energy = energy / state->maxEnergy;
 
             // Energy truncated to highlight contours
             float energyTrunc = (((byte) (energy * 255)) & 0xf8) / 255.0;
@@ -286,9 +310,9 @@ void updateAndRender(PixelBuffer* pixBuff, Input* inp) {
     
 
     // Draw a marker at the current position of the langevin chain
-    int currX = ((int) (pixBuff->width * (curr.x - xOffset + 1) / 2));
-    int currY = ((int) (pixBuff->height * (curr.y - yOffset + 1) / 2));
-    drawCircle(pixBuff, currRad, currX, currY);
+    int currX = ((int) (pixBuff->width * (state->curr.x - state->xOffset + 1) / 2));
+    int currY = ((int) (pixBuff->height * (state->curr.y - state->yOffset + 1) / 2));
+    drawCircle(pixBuff, POINTER_RADIUS, currX, currY);
 
 }
 
@@ -297,7 +321,16 @@ void clearInput(Input* inp) {
     for (int i=0; i < NUM_BUTTONS; i++) {
         inp->buttons[i] = 0;
     }
+    inp->doSet = 0;
+}
 
+
+void initState(SimState* state) {
+    state->curr = (Vec2) {0.0, 0.0};
+    state->stepSizeLevel = START_STEP_SIZE_LEVEL;
+    state->xOffset = 0.0;
+    state->yOffset = 0.0;
+    state->maxEnergy = 1.0;
 }
 
 
@@ -316,17 +349,20 @@ void handleKey(Input* inp, int sym, int isDown) {
             inp->moveD = isDown;
             break;
         case SDLK_z:
-            inp->zIn = isDown;
+            inp->decStep = isDown;
             break;
         case SDLK_x:
-            inp->zOut = isDown;
+            inp->incStep = isDown;
             break;
     }
 }
 
 
 int main() {
-    srand(42);
+    // Initialize random
+    srand(time(0));
+
+    // SDL init
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         printf("Error initializing SDL!\n");
     }
@@ -339,7 +375,6 @@ int main() {
         480,
         SDL_WINDOW_RESIZABLE
     );
-
 
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, 0);
 
@@ -364,14 +399,11 @@ int main() {
     pixBuff.pixels = (byte*) malloc(height * pixBuff.pitch);
 
 
-    Memory mem;
-    mem.size = 0;
-    mem.maxSize = Megabytes(1);
-    mem.storage = (byte*) malloc(sizeof(byte) * mem.maxSize);
+    SimState state;
+    initState(&state);
 
     
     Input inp;
-    
     clearInput(&inp);
     
 
@@ -403,10 +435,20 @@ int main() {
                 case SDL_KEYUP:
                     handleKey(&inp, event.key.keysym.sym, 0);
                     break;
+
+                case SDL_MOUSEBUTTONDOWN:
+                    inp.setX = ((SDL_MouseButtonEvent*) &event)->x;
+                    inp.setY = ((SDL_MouseButtonEvent*) &event)->y;
+                    inp.doSet = 1;
+                    break;
+
+                case SDL_MOUSEBUTTONUP:
+                    inp.doSet = 0;
+                    break;
                 default:;
             }
         }
-        updateAndRender(&pixBuff, &inp);
+        updateAndRender(&pixBuff, &inp, &state);
         sdl_update_window(renderer, texture, &pixBuff);
     }
 
